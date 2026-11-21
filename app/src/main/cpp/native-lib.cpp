@@ -5,7 +5,6 @@
 #include <fstream>
 #include <sstream>
 #include "nlohmann/json.hpp"
-#include "http/cpr/cpr.h"
 #include "Misc/Logging.h"
 #include "ImGui/imgui.h"
 #include "ImGui/imgui_impl_android.h"
@@ -40,7 +39,7 @@ EGLBoolean new_eglSwapBuffers(EGLDisplay _display, EGLSurface _surface) {
 
     return old_eglSwapBuffers(_display, _surface);
 }
-bool emulator = true;
+bool emulator = false; // false = real phone (touch via nativeInjectEvent). If touch/launch misbehaves, try true.
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void * reserved)
 {
     if(!emulator){
@@ -63,6 +62,7 @@ void *hack_thread(void *)
     do {
         sleep(1);
     } while (!Il2cppLoaded());
+    Hooks::Install(); // our game hooks (see Hooking/Hooks.h)
     AttachIl2Cpp(); // this is required when you use bynamemodding functions
     Unity::Screen::Setup();
     if(emulator){
