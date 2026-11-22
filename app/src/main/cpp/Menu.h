@@ -4,6 +4,11 @@
 #include "Misc/ESP.h"
 #include "Unity/Screen.h"
 
+// Screen size, filled from the EGL surface in new_eglSwapBuffers (native-lib.cpp).
+// Using EGL avoids calling il2cpp/BNM from the render thread.
+static int g_screenW = 0;
+static int g_screenH = 0;
+
 namespace Menu {
 
     ImVec4 color = ImVec4(1, 1, 1, 1);
@@ -26,7 +31,7 @@ namespace Menu {
     }
 
     void DrawImGui() {
-        if (init && Unity::Screen::is_done) {
+        if (init && g_screenW > 0 && g_screenH > 0) {
 
             ImGuiIO &io = ImGui::GetIO();
 
@@ -37,7 +42,7 @@ namespace Menu {
 
             ImGui_ImplOpenGL3_NewFrame();
 
-            ImGui_ImplAndroid_NewFrame(Unity::Screen::Width.get(), Unity::Screen::Height.get());
+            ImGui_ImplAndroid_NewFrame(g_screenW, g_screenH);
 
             ImGui::NewFrame();
             DrawMenu();
