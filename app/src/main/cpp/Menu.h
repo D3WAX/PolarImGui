@@ -30,9 +30,24 @@ namespace Menu {
         ImVec2 ws = ImGui::GetWindowSize();
         g_menuX = wp.x; g_menuY = wp.y; g_menuW = ws.x; g_menuH = ws.y;
 
-        ImGui::TextDisabled("Offline / local use only");
+        ImGui::TextDisabled("Private server / local use");
         ImGui::Separator();
 
+        ImGui::Text("Weapon");
+        ImGui::Separator();
+        ImGui::SliderFloat("Spread x", &Hooks::spreadMult, 0.0f, 3.0f, "%.2f");
+        ImGui::Checkbox("Invert spread", &Hooks::spreadInvert);
+        ImGui::SliderFloat("Cam recoil x", &Hooks::recoilMult, 0.0f, 3.0f, "%.2f");
+
+        // live readout: shows how the game values behave while you move / shoot
+        float steadiness = 0.0f, kick = 0.0f;
+        if (Hooks::g_localWeapon) steadiness = *(float *) ((uintptr_t) Hooks::g_localWeapon + 0x80);
+        if (Hooks::g_cam) kick = *(float *) ((uintptr_t) Hooks::g_cam + 0xDC);
+        ImGui::TextDisabled("steadiness %.3f   kick %.3f", steadiness, kick);
+
+        ImGui::Spacing();
+        ImGui::Text("Misc");
+        ImGui::Separator();
         ImGui::Checkbox("God Mode (NPC damage)", &Hooks::godMode);
 
         ImGui::End();
