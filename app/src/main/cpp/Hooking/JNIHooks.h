@@ -1,6 +1,10 @@
 #ifndef JNIHOOKS
 #define JNIHOOKS
 
+// Touch routing: a touch that STARTS on the menu goes to ImGui only (the game never sees it);
+// any other touch goes to the game only (ImGui never sees it). Decided once, at ACTION_DOWN.
+static bool g_menuTouch = false;
+
 jmethodID MotionEvent_getX;
 jmethodID MotionEvent_getY;
 jmethodID MotionEvent_getAction;
@@ -26,17 +30,29 @@ jboolean nativeInjectEvent(JNIEnv *env, jobject thiz, jobject inputEvent)
             if (!MotionEvent_getAction)
                 MotionEvent_getAction = env->GetMethodID(MotionEventCls, OBFUSCATE("getAction"),
                                                          OBFUSCATE("()I"));
-            ImGuiIO &io = ImGui::GetIO();
-            auto x = env->CallFloatMethod(inputEvent, MotionEvent_getX);
-            auto y = env->CallFloatMethod(inputEvent, MotionEvent_getY);
-            auto action = env->CallIntMethod(inputEvent,
-                                            MotionEvent_getAction);
-            LOGD("X:%f\nY:%f\nAction:%i", x, y, action);
-            ImGui_ImplAndroid_HandleInputEvent(x,
-                                               y,
-                                               action);
-            if (io.WantCaptureMouse)
-                return true;
+            float x = env->CallFloatMethod(inputEvent, MotionEvent_getX);
+            float y = env->CallFloatMethod(inputEvent, MotionEvent_getY);
+            int action = env->CallIntMethod(inputEvent, MotionEvent_getAction);
+            int masked = action & 0xFF; // 0=DOWN 1=UP 2=MOVE 3=CANCEL 5=POINTER_DOWN 6=POINTER_UP
+
+            if (masked == 0) // first finger down: decide who owns this touch
+            {
+                const float m = 8.0f; // small margin around the window
+                g_menuTouch = (g_menuW > 0.0f &&
+                               x >= g_menuX - m && x <= g_menuX + g_menuW + m &&
+                               y >= g_menuY - m && y <= g_menuY + g_menuH + m);
+            }
+
+            if (g_menuTouch)
+            {
+                // only the first finger drives ImGui; CANCEL is treated like UP
+                if (masked == 0 || masked == 1 || masked == 2 || masked == 3)
+                    ImGui_ImplAndroid_HandleInputEvent((int) x, (int) y, masked == 3 ? 1 : masked);
+                if (masked == 1 || masked == 3)
+                    g_menuTouch = false;
+                return true; // swallow: the game must not see touches that belong to the menu
+            }
+            // touch started outside the menu: fall through to the game untouched
         } else if (env->IsInstanceOf(inputEvent, KeyEventCls))
         {
             if (!KeyEvent_getAction)
@@ -126,4 +142,4 @@ jint hook_RegisterNatives(JNIEnv* env, jclass klazz, const JNINativeMethod* meth
     return old_RegisterNatives(env, klazz, methods, methodcount);
 }
 
-#endif JNIHOOKS
+#endif
