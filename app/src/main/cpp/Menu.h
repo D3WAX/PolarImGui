@@ -23,7 +23,7 @@ namespace Menu {
         ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.38f, 0.0f), ImGuiCond_FirstUseEver);
 
         // Tap the arrow in the title bar to collapse the window
-        ImGui::Begin("LAC Mod", nullptr, ImGuiWindowFlags_NoSavedSettings);
+        ImGui::Begin("DDS PVT", nullptr, ImGuiWindowFlags_NoSavedSettings);
 
         // publish the window rect so the touch hook can tell menu touches from game touches
         ImVec2 wp = ImGui::GetWindowPos();
@@ -38,12 +38,16 @@ namespace Menu {
         ImGui::SliderFloat("Spread x", &Hooks::spreadMult, 0.0f, 3.0f, "%.2f");
         ImGui::Checkbox("Invert spread", &Hooks::spreadInvert);
         ImGui::SliderFloat("Cam recoil x", &Hooks::recoilMult, 0.0f, 3.0f, "%.2f");
+        ImGui::SliderFloat("Cam shake x", &Hooks::shakeMult, 0.0f, 3.0f, "%.2f");
+        ImGui::SliderFloat("Cam anim speed", &Hooks::animSpeed, 0.0f, 2.0f, "%.2f");
 
         // live readout: shows how the game values behave while you move / shoot
         float steadiness = 0.0f, kick = 0.0f;
         if (Hooks::g_localWeapon) steadiness = *(float *) ((uintptr_t) Hooks::g_localWeapon + 0x80);
         if (Hooks::g_cam) kick = *(float *) ((uintptr_t) Hooks::g_cam + 0xDC);
-        ImGui::TextDisabled("steadiness %.3f   kick %.3f", steadiness, kick);
+        float shake = Hooks::g_shakePtr ? *Hooks::g_shakePtr : 0.0f;
+        ImGui::TextDisabled("steadiness %.3f   kick %.3f   shake %.3f", steadiness, kick, shake);
+        ImGui::TextDisabled("anim icall: %s", Hooks::p_animSetSpeed ? "ok" : "not resolved");
 
         ImGui::Spacing();
         ImGui::Text("Misc");
