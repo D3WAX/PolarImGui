@@ -9,6 +9,9 @@
 static int g_screenW = 0;
 static int g_screenH = 0;
 
+// Menu window rectangle in screen pixels (updated every frame in DrawMenu, read by the touch hook)
+static volatile float g_menuX = 0.0f, g_menuY = 0.0f, g_menuW = 0.0f, g_menuH = 0.0f;
+
 namespace Menu {
 
     ImVec4 color = ImVec4(1, 1, 1, 1);
@@ -21,6 +24,11 @@ namespace Menu {
 
         // Tap the arrow in the title bar to collapse the window
         ImGui::Begin("LAC Mod", nullptr, ImGuiWindowFlags_NoSavedSettings);
+
+        // publish the window rect so the touch hook can tell menu touches from game touches
+        ImVec2 wp = ImGui::GetWindowPos();
+        ImVec2 ws = ImGui::GetWindowSize();
+        g_menuX = wp.x; g_menuY = wp.y; g_menuW = ws.x; g_menuH = ws.y;
 
         ImGui::TextDisabled("Offline / local use only");
         ImGui::Separator();
