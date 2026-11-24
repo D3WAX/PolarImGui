@@ -1,6 +1,7 @@
 #ifndef HOOKS
 #define HOOKS
 #include <math.h>
+#include <string.h>
 #include <dlfcn.h>
 namespace Hooks // place your hooks in this file to keep everything neat and tidy
 {
@@ -11,6 +12,25 @@ namespace Hooks // place your hooks in this file to keep everything neat and tid
     float recoilMult = 1.0f;     // 1 = original (camera recoil: the upward kick)
     float shakeMult = 1.0f;      // 1 = original (camera shake, PlayerControl.camShake)
     float animSpeed = 1.0f;      // 1 = original (speed of the camera Animator: bob / sway / shot shake)
+
+    // ---- aim assist settings (Menu.h) ----
+    bool aimOn = false;
+    float aimStrength = 5.0f;    // 0..10, 10 = instant
+    float aimFovPx = 220.0f;     // radius of the FOV circle in pixels (drawn by the menu)
+    float aimFovDeg = 10.0f;     // same radius in degrees (computed by the menu from aimFovPx + camVFov)
+    float aimMaxDist = 150.0f;   // meters
+    float aimTargetH = 1.2f;     // aim point above the target's feet (chest)
+    float aimEyeH = 1.5f;        // our eye height above our feet
+    float camVFov = 60.0f;       // assumed vertical camera FOV in degrees (calibration for the circle)
+    bool aimOnlyShooting = false;
+    bool aimIgnoreTeam = true;
+
+    // ---- aim assist readouts ----
+    int g_aimSeen = 0;           // players tracked this frame
+    int g_aimInFov = 0;          // players inside the FOV circle
+    float g_aimDist = 0.0f;      // distance to the chosen target (m)
+    float g_aimAng = 0.0f;       // angle to the chosen target (deg)
+    bool g_aimUsedIcall = false; // position came from Transform icall instead of _lastPosition
 
     // ---- live values for the on-screen readout (helps tuning without a PC) ----
     void *g_localWeapon = nullptr; // local player's PlayerWeapon
@@ -87,9 +107,12 @@ namespace Hooks // place your hooks in this file to keep everything neat and tid
     // candidate, so we scale it only while the game fires a shot, then restore it.
     // Shoot() and LocalShoot() may call each other, so a guard makes sure we scale only once.
     bool inShoot = false;
+    int g_frame = 0;            // counts camera LateUpdates (one per rendered frame)
+    int g_lastShootFrame = -1000;
 
     static inline void ShootScaled(void *self, void *method, void (*orig)(void *, void *))
     {
+        if (IsLocalWeapon(self)) g_lastShootFrame = g_frame;
         bool tweak = !inShoot && self != nullptr && fabsf(spreadMult - 1.0f) > 0.001f && IsLocalWeapon(self);
         if (!tweak)
         {
@@ -126,6 +149,140 @@ namespace Hooks // place your hooks in this file to keep everything neat and tid
         old_WeaponUpdate(self, method);
     }
 
+    // ---- Tracking other players (PlayerControl$$Update, RVA 0xFAC2D4, runs for every player object) ----
+    struct Tgt { void *pc; int seen; };
+    Tgt g_tgts[64];
+
+    void (*old_PCUpdate)(void *self, void *method) = nullptr;
+    void PCUpdate(void *self, void *method)
+    {
+        if (self != nullptr)
+        {
+            int freeSlot = -1;
+            bool found = false;
+            for (int i = 0; i < 64; i++)
+            {
+                if (g_tgts[i].pc == self) { g_tgts[i].seen = g_frame; found = true; break; }
+                if (freeSlot < 0 && (g_tgts[i].pc == nullptr || g_frame - g_tgts[i].seen > 120)) freeSlot = i;
+            }
+            if (!found && freeSlot >= 0) { g_tgts[freeSlot].pc = self; g_tgts[freeSlot].seen = g_frame; }
+        }
+        old_PCUpdate(self, method);
+    }
+
+    // il2cpp string equality (UTF-16: length @0x10, chars @0x14)
+    static inline bool SameStr(void *a, void *b)
+    {
+        if (!a || !b) return false;
+        int la = *(int *) ((uintptr_t) a + 0x10);
+        int lb = *(int *) ((uintptr_t) b + 0x10);
+        if (la != lb || la <= 0 || la > 64) return false;
+        return memcmp((void *) ((uintptr_t) a + 0x14), (void *) ((uintptr_t) b + 0x14), (size_t) la * 2) == 0;
+    }
+
+    // Transform.get_position_Injected(Transform, out Vector3) icall, resolved lazily (fallback only)
+    typedef void (*Transform_getPos_t)(void *transform, float *out3);
+    Transform_getPos_t p_getPosInj = nullptr;
+    bool posResolveTried = false;
+
+    // World position of a PlayerControl: its _lastPosition (Vector3 @0x2E0); falls back to chestBone's transform
+    static inline bool PlayerPos(void *pc, float *out)
+    {
+        float *lp = (float *) ((uintptr_t) pc + 0x2E0);
+        if (fabsf(lp[0]) + fabsf(lp[1]) + fabsf(lp[2]) > 0.01f)
+        {
+            out[0] = lp[0]; out[1] = lp[1]; out[2] = lp[2];
+            return true;
+        }
+        if (!posResolveTried)
+        {
+            posResolveTried = true;
+            void *hd = dlopen(OBFUSCATE("libil2cpp.so"), RTLD_NOW);
+            il2cpp_resolve_icall_t resolve = hd ? (il2cpp_resolve_icall_t) dlsym(hd, "il2cpp_resolve_icall") : nullptr;
+            if (resolve) p_getPosInj = (Transform_getPos_t) resolve("UnityEngine.Transform::get_position_Injected");
+        }
+        void *chest = *(void **) ((uintptr_t) pc + 0x130); // PlayerControl.chestBone
+        if (p_getPosInj && chest)
+        {
+            p_getPosInj(chest, out);
+            out[1] -= 1.2f; // chest -> approx. feet, so the same height offset applies
+            g_aimUsedIcall = true;
+            return true;
+        }
+        return false;
+    }
+
+    static inline float Wrap180(float a)
+    {
+        a = fmodf(a, 360.0f);
+        if (a > 180.0f) a -= 360.0f;
+        if (a < -180.0f) a += 360.0f;
+        return a;
+    }
+
+    // Aim assist: rotate the orbit camera (rotationYAxis @0x6C = yaw, rotationXAxis @0x70 = pitch, degrees)
+    // toward the best target inside the FOV circle. strength/10 = fraction of the remaining angle applied per frame.
+    static inline void AimAssist(void *cam)
+    {
+        g_aimSeen = 0; g_aimInFov = 0;
+        if (!aimOn) return;
+        if (aimOnlyShooting && (g_frame - g_lastShootFrame) > 15) return;
+        void *me = LocalPlayer();
+        if (!me) return;
+
+        float o[3];
+        if (!PlayerPos(me, o)) return;
+        o[1] += aimEyeH;
+        void *myTeam = *(void **) ((uintptr_t) me + 0x70);
+
+        float *ry = (float *) ((uintptr_t) cam + 0x6C);
+        float *rx = (float *) ((uintptr_t) cam + 0x70);
+        float curYaw = *ry;
+        float curPitch = Wrap180(*rx);
+
+        float bestAng = 1e9f, bestDyaw = 0, bestDpitch = 0, bestDist = 0;
+        for (int i = 0; i < 64; i++)
+        {
+            void *pc = g_tgts[i].pc;
+            if (!pc || pc == me || g_frame - g_tgts[i].seen > 5) continue;
+            g_aimSeen++;
+
+            void *ph = *(void **) ((uintptr_t) pc + 0x270);            // PlayerControl.playerHealth
+            if (ph && (*(bool *) ((uintptr_t) ph + 0x75))) continue;   // PlayerHealth.dead
+            if (aimIgnoreTeam && SameStr(*(void **) ((uintptr_t) pc + 0x70), myTeam)) continue;
+
+            float t[3];
+            if (!PlayerPos(pc, t)) continue;
+            float dx = t[0] - o[0], dy = (t[1] + aimTargetH) - o[1], dz = t[2] - o[2];
+            float hd = sqrtf(dx * dx + dz * dz);
+            float dist = sqrtf(hd * hd + dy * dy);
+            if (dist < 0.5f || dist > aimMaxDist) continue;
+
+            float yaw = atan2f(dx, dz) * 57.29578f;
+            float pitch = -atan2f(dy, hd) * 57.29578f; // Euler X: positive = looking down
+            float dyaw = Wrap180(yaw - curYaw);
+            float dpitch = pitch - curPitch;
+            float ang = sqrtf(dyaw * dyaw + dpitch * dpitch);
+            if (ang > aimFovDeg) continue;
+            g_aimInFov++;
+            if (ang < bestAng) { bestAng = ang; bestDyaw = dyaw; bestDpitch = dpitch; bestDist = dist; }
+        }
+        if (bestAng > 1e8f) return;
+
+        g_aimDist = bestDist;
+        g_aimAng = bestAng;
+        float f = aimStrength / 10.0f;
+        if (f <= 0.0f) return;
+        if (f > 0.999f)
+        {
+            f = 1.0f;
+            *(float *) ((uintptr_t) cam + 0x74) = 0.0f; // velocityX / velocityY: stop manual drag overshoot
+            *(float *) ((uintptr_t) cam + 0x78) = 0.0f;
+        }
+        *ry = curYaw + bestDyaw * f;
+        *rx = curPitch + bestDpitch * f;
+    }
+
     // ---- Camera recoil ----
     // PlayerOrbitCamera.weaponKick (float @0xDC) is set/increased by WeaponKick(float) and decays in LateUpdate.
     // WeaponKick itself is only 8 bytes (too small to hook safely), so we watch the field instead:
@@ -144,6 +301,7 @@ namespace Hooks // place your hooks in this file to keep everything neat and tid
             return;
         }
         g_cam = self;
+        g_frame++;
 
         float *kick = (float *) ((uintptr_t) self + 0xDC);          // PlayerOrbitCamera.weaponKick
         void *pc = *(void **) ((uintptr_t) self + 0x80);            // PlayerOrbitCamera.playerControl
@@ -152,6 +310,7 @@ namespace Hooks // place your hooks in this file to keep everything neat and tid
 
         ScaleImpulse(kick, lastKickAfter, recoilMult);
         if (shake) ScaleImpulse(shake, lastShakeAfter, shakeMult);
+        AimAssist(self);
 
         old_CamLateUpdate(self, method);
 
@@ -176,6 +335,9 @@ namespace Hooks // place your hooks in this file to keep everything neat and tid
 
         a = getAbsoluteAddress(OBFUSCATE("libil2cpp.so"), 0x1145658);
         if (a) hook((void *) a, (void *) WeaponUpdate, (void **) &old_WeaponUpdate);
+
+        a = getAbsoluteAddress(OBFUSCATE("libil2cpp.so"), 0xFAC2D4);
+        if (a) hook((void *) a, (void *) PCUpdate, (void **) &old_PCUpdate);
 
         a = getAbsoluteAddress(OBFUSCATE("libil2cpp.so"), 0xFA30FC);
         if (a) hook((void *) a, (void *) CamLateUpdate, (void **) &old_CamLateUpdate);
